@@ -1,44 +1,9 @@
-pragma solidity ^0.7.0;
+pragma solidity ^0.7.1;
 
 import './Ownable.sol';
+import './GenesisLib.sol';
 
 contract Genesis is Ownable {
-
-    address public defaultMetaDao;
-
-    bytes public defaultProxyBytecode;
-
-    uint public launchFee;
-
-    uint public cancellationFee;
-
-    uint public maxWhitelistSize;
-
-    bool public genOwnerParticipation;
-
-    bool public disabled;
-
-    struct Proposal {
-        uint id;
-        address creator;
-        string title;
-        uint requiredFunds;
-        uint participationAmount;
-        mapping(address => bool) whitelist;
-        address[] addresses;
-        mapping(address => uint) funds;
-        uint participantCount;
-        uint totalFunds;
-        bool launched;
-        bool cancelled;
-        address metaDaoAddress;
-        bytes proxyBytecode;
-        address daoAddress;
-    }
-
-    uint public proposalCount;
-
-    mapping(uint => Proposal) public proposals;
 
     constructor(address defaultMetaDao_, bytes memory defaultProxyBytecode_, uint launchFee_, uint cancellationFee_, uint maxWhitelistSize_, bool genOwnerParticipation_) {
         setUpgradeabilityProxyOwner(msg.sender);
@@ -52,43 +17,53 @@ contract Genesis is Ownable {
     }
 
     function setConfig(uint launchFee_, uint cancellationFee_, uint maxWhitelistSize_, bool genOwnerParticipation_) public onlyProxyOwner {
-        launchFee = launchFee_;
-        cancellationFee = cancellationFee_;
-        maxWhitelistSize = maxWhitelistSize_;
-        genOwnerParticipation = genOwnerParticipation_;
+        GenesisLib.GenesisStorage storage s = GenesisLib.getStorage();
+        s.launchFee = launchFee_;
+        s.cancellationFee = cancellationFee_;
+        s.maxWhitelistSize = maxWhitelistSize_;
+        s.genOwnerParticipation = genOwnerParticipation_;
     }
 
     function setDefaultMetaDao(address defaultMetaDao_) public onlyProxyOwner {
-        defaultMetaDao = defaultMetaDao_;
+        GenesisLib.GenesisStorage storage s = GenesisLib.getStorage();
+        s.defaultContracts.metaDaoAddress = defaultMetaDao_;
     }
 
     function setDefaultProxyBytecode(bytes memory defaultProxyBytecode_) public onlyProxyOwner {
-        defaultProxyBytecode = defaultProxyBytecode_;
+        GenesisLib.GenesisStorage storage s = GenesisLib.getStorage();
+        s.defaultContracts.proxyBytecode = defaultProxyBytecode_;
     }
 
     function setDisabled(bool disabled_) public onlyProxyOwner {
-        disabled = disabled_;
+        GenesisLib.GenesisStorage storage s = GenesisLib.getStorage();
+        s.disabled = disabled_;
     }
 
-    function createProposal(uint requiredFunds, uint participationAmount, string memory title, address[] memory whitelist, address metaDaoAddress, bytes memory proxyBytecode) public payable {
-        require(disabled == false, "genesis is disabled");
+    function createProposal(uint requiredFunds, uint participationAmount, string memory title, address[] memory whitelist, address metaDaoAddress, bytes memory proxyBytecode, bytes memory proxyDiamondCut) public payable {
+        GenesisLib.GenesisStorage storage s = GenesisLib.getStorage();
+        require(s.disabled == false, "genesis is disabled");
         bytes memory tempTitle = bytes(title);
         require(tempTitle.length > 0, "title cannot be empty");
         require(whitelist.length > 0, "whitelist cannot be empty");
-        require(whitelist.length <= maxWhitelistSize, "whitelist exceeds max size");
+        require(whitelist.length <= s.maxWhitelistSize, "whitelist exceeds max size");
         require(participationAmount * whitelist.length >= requiredFunds, "requiredFunds is greater then the sum of participationAmount for whitelisted accounts");
 
-        proposalCount++;
+        s.proposalCount++;
 
-        Proposal storage p = proposals[proposalCount];
-        p.id = proposalCount;
+        GenesisLib.Proposal storage p = s.proposals[s.proposalCount];
+        p.id = s.proposalCount;
         p.creator = msg.sender;
         p.title = title;
         p.requiredFunds = requiredFunds;
         p.participationAmount = participationAmount;
         p.totalFunds = 0;
-        p.metaDaoAddress = metaDaoAddress != address(0) ? metaDaoAddress : defaultMetaDao;
-        p.proxyBytecode = proxyBytecode;
+
+        if (metaDaoAddress != address(0) || proxyBytecode.length > 0 || proxyDiamondCut.length > 0) {
+            GenesisLib.ProposalContracts storage pc = s.proposalContracts[s.proposalCount];
+            pc.metaDaoAddress = metaDaoAddress;
+            pc.proxyBytecode = proxyBytecode;
+            pc.proxyDiamondCut = proxyDiamondCut;
+        }
 
         for (uint i = 0; i < whitelist.length; i++) {
             p.whitelist[whitelist[i]] = true;
@@ -96,7 +71,7 @@ contract Genesis is Ownable {
     }
 
     function deposit(uint id) public payable {
-        Proposal storage proposal = proposals[id];
+        GenesisLib.Proposal storage proposal = GenesisLib.getProposal(id);
 
         require(proposal.id > 0, 'proposal not found');
         require(proposal.whitelist[msg.sender], 'sender is not whitelisted');
@@ -114,7 +89,9 @@ contract Genesis is Ownable {
     function launch(uint id) public {
         uint gasBefore = gasleft();
 
-        Proposal storage proposal = proposals[id];
+        GenesisLib.GenesisStorage storage s = GenesisLib.getStorage();
+        GenesisLib.Proposal storage proposal = s.proposals[id];
+        GenesisLib.ProposalContracts storage pc = s.proposalContracts[id];
 
         require(proposal.id > 0, 'proposal not found');
         require(!proposal.cancelled, 'proposal is cancelled');
@@ -124,7 +101,7 @@ contract Genesis is Ownable {
 
         uint participantCount = proposal.participantCount;
         address owner = proxyOwner();
-        if (owner != address(0) && genOwnerParticipation) {
+        if (owner != address(0) && s.genOwnerParticipation) {
             participantCount++;
         }
 
@@ -139,20 +116,22 @@ contract Genesis is Ownable {
                 payerIndex++;
             }
         }
-        if (owner != address(0) && genOwnerParticipation) {
+        if (owner != address(0) && s.genOwnerParticipation) {
             participants[payerIndex] = owner;
         }
 
         // deploy proxy, assign ownership to itself and set the dao logic contract
-        bytes memory proxyBytecode = proposal.proxyBytecode.length > 0 ? proposal.proxyBytecode : defaultProxyBytecode;
+        bytes memory proxyBytecode = pc.proxyBytecode.length > 0 ? pc.proxyBytecode : s.defaultContracts.proxyBytecode;
+        address metaDaoAddress = pc.metaDaoAddress != address(0) ? pc.metaDaoAddress : s.defaultContracts.metaDaoAddress;
+
         proposal.daoAddress = deployProxy(proxyBytecode, proposal.id);
 
         GenDaoInterface dao = GenDaoInterface(proposal.daoAddress);
-        dao.initProxy(proposal.metaDaoAddress, proposal.daoAddress);
+        dao.initProxy(metaDaoAddress, proposal.daoAddress);
         dao.initialize(address(this), proposal.title, participants);
 
-        if (owner != address(0) && launchFee > 0) {
-            uint launchCost = proposal.totalFunds * launchFee / 100;
+        if (owner != address(0) && s.launchFee > 0) {
+            uint launchCost = proposal.totalFunds * s.launchFee / 100;
             proposal.totalFunds -= launchCost;
             transferTo(owner, launchCost);
         }
@@ -168,6 +147,7 @@ contract Genesis is Ownable {
 
     function deployProxy(bytes memory proxyBytecode, uint salt) internal returns (address) {
         address addr;
+
         assembly {
             addr := create2(0, add(proxyBytecode, 0x20), mload(proxyBytecode), salt)
             if iszero(extcodesize(addr)) {
@@ -178,7 +158,7 @@ contract Genesis is Ownable {
     }
 
     function cancel(uint id) public {
-        Proposal storage proposal = proposals[id];
+        GenesisLib.Proposal storage proposal = GenesisLib.getProposal(id);
 
         require(proposal.id > 0, 'proposal not found');
         require(msg.sender == proposal.creator, 'only creator can cancel a proposal');
@@ -189,7 +169,8 @@ contract Genesis is Ownable {
     }
 
     function refund(uint id) public returns (bool) {
-        Proposal storage proposal = proposals[id];
+        GenesisLib.GenesisStorage storage s = GenesisLib.getStorage();
+        GenesisLib.Proposal storage proposal = s.proposals[id];
 
         require(proposal.id > 0, 'proposal not found');
         require(proposal.cancelled, 'not cancelled');
@@ -204,9 +185,9 @@ contract Genesis is Ownable {
         uint refundRatio = 100;
 
         address owner = proxyOwner();
-        if (owner != address(0) && cancellationFee > 0) {
-            refundRatio -= cancellationFee;
-            transferTo(owner, amount * cancellationFee / 100);
+        if (owner != address(0) && s.cancellationFee > 0) {
+            refundRatio -= s.cancellationFee;
+            transferTo(owner, amount * s.cancellationFee / 100);
         }
 
         msg.sender.transfer(amount * refundRatio / 100);
@@ -220,7 +201,7 @@ contract Genesis is Ownable {
     }
 
     function getProposal(uint id) public view returns (string memory, address, address, bool, bool, uint, uint, uint, uint) {
-        Proposal storage proposal = proposals[id];
+        GenesisLib.Proposal storage proposal = GenesisLib.getProposal(id);
         return (
             proposal.title,
             proposal.daoAddress,
