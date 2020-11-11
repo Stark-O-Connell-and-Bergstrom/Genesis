@@ -5,15 +5,15 @@ import './GenesisLib.sol';
 
 contract Genesis is Ownable {
 
-    constructor(bytes memory defaultProxyBytecode_, bytes memory defaultDiamondCut_, uint launchFee_, uint cancellationFee_, uint maxWhitelistSize_, bool genOwnerParticipation_) {
+    constructor(bytes memory diamondBytecode_, bytes memory diamondCut_, uint launchFee_, uint cancellationFee_, uint maxWhitelistSize_, bool genOwnerParticipation_) {
         setUpgradeabilityProxyOwner(msg.sender);
         GenesisLib.GenesisStorage storage s = GenesisLib.getStorage();
         s.launchFee = launchFee_;
         s.cancellationFee = cancellationFee_;
         s.maxWhitelistSize = maxWhitelistSize_;
         s.genOwnerParticipation = genOwnerParticipation_;
-        s.defaultContracts.proxyBytecode = defaultProxyBytecode_;
-        s.defaultContracts.proxyDiamondCut = defaultDiamondCut_;
+        s.diamondBytecode = diamondBytecode_;
+        s.diamondCut = diamondCut_;
     }
 
     function setConfig(uint launchFee_, uint cancellationFee_, uint maxWhitelistSize_, bool genOwnerParticipation_) public onlyProxyOwner {
@@ -24,10 +24,10 @@ contract Genesis is Ownable {
         s.genOwnerParticipation = genOwnerParticipation_;
     }
 
-    function setDefaultContracts(bytes memory defaultProxyBytecode_, bytes memory defaultDiamondCut_) public onlyProxyOwner {
+    function setDefaultDiamond(bytes memory diamondBytecode_, bytes memory diamondCut_) public onlyProxyOwner {
         GenesisLib.GenesisStorage storage s = GenesisLib.getStorage();
-        s.defaultContracts.proxyBytecode = defaultProxyBytecode_;
-        s.defaultContracts.proxyDiamondCut = defaultDiamondCut_;
+        s.diamondBytecode = diamondBytecode_;
+        s.diamondCut = diamondCut_;
     }
 
     function setDisabled(bool disabled_) public onlyProxyOwner {
@@ -35,7 +35,7 @@ contract Genesis is Ownable {
         s.disabled = disabled_;
     }
 
-    function createProposal(uint requiredFunds, uint participationAmount, string memory title, address[] memory whitelist, bytes memory proxyBytecode, bytes memory proxyDiamondCut) public payable {
+    function createProposal(uint requiredFunds, uint participationAmount, string memory title, address[] memory whitelist, bytes memory diamondBytecode, bytes memory diamondCut) public payable {
         GenesisLib.GenesisStorage storage s = GenesisLib.getStorage();
         require(s.disabled == false, "genesis is disabled");
         bytes memory tempTitle = bytes(title);
@@ -53,12 +53,8 @@ contract Genesis is Ownable {
         p.requiredFunds = requiredFunds;
         p.participationAmount = participationAmount;
         p.totalFunds = 0;
-
-        if (proxyBytecode.length > 0 || proxyDiamondCut.length > 0) {
-            GenesisLib.ProposalContracts storage pc = s.proposalContracts[s.proposalCount];
-            pc.proxyBytecode = proxyBytecode;
-            pc.proxyDiamondCut = proxyDiamondCut;
-        }
+        p.diamondBytecode = diamondBytecode;
+        p.diamondCut = diamondCut;
 
         for (uint i = 0; i < whitelist.length; i++) {
             p.whitelist[whitelist[i]] = true;
@@ -86,7 +82,6 @@ contract Genesis is Ownable {
 
         GenesisLib.GenesisStorage storage s = GenesisLib.getStorage();
         GenesisLib.Proposal storage proposal = s.proposals[id];
-        GenesisLib.ProposalContracts storage pc = s.proposalContracts[id];
 
         require(proposal.id > 0, 'proposal not found');
         require(!proposal.cancelled, 'proposal is cancelled');
@@ -139,11 +134,11 @@ contract Genesis is Ownable {
 
     function deployProxy(uint proposalId) internal returns (address) {
         GenesisLib.GenesisStorage storage s = GenesisLib.getStorage();
-        GenesisLib.ProposalContracts storage pc = s.proposalContracts[proposalId];
+        GenesisLib.Proposal storage p = s.proposals[proposalId];
 
-        bytes memory proxyBytecode = pc.proxyBytecode.length > 0 ? pc.proxyBytecode : s.defaultContracts.proxyBytecode;
-        bytes memory proxyDiamondCut = pc.proxyDiamondCut.length > 0 ? pc.proxyDiamondCut : s.defaultContracts.proxyDiamondCut;
-        bytes memory bytecode = abi.encodePacked(proxyBytecode, proxyDiamondCut);
+        bytes memory diamondBytecode = p.diamondBytecode.length > 0 ? p.diamondBytecode : s.diamondBytecode;
+        bytes memory diamondCut = p.diamondCut.length > 0 ? p.diamondCut : s.diamondCut;
+        bytes memory bytecode = abi.encodePacked(diamondBytecode, diamondCut);
 
         address addr;
         assembly {

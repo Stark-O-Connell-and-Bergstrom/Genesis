@@ -17,15 +17,13 @@ library GenesisLib {
         bool launched;
         bool cancelled;
         address daoAddress;
-    }
-
-    struct ProposalContracts {
-        bytes proxyBytecode;
-        bytes proxyDiamondCut;
+        bytes diamondBytecode;
+        bytes diamondCut;
     }
 
     struct GenesisStorage {
-        ProposalContracts defaultContracts;
+        bytes diamondBytecode;
+        bytes diamondCut;
         uint launchFee;
         uint cancellationFee;
         uint maxWhitelistSize;
@@ -33,7 +31,6 @@ library GenesisLib {
         bool disabled;
         uint proposalCount;
         mapping(uint => Proposal) proposals;
-        mapping(uint => ProposalContracts) proposalContracts;
     }
 
     function getStorage() internal pure returns (GenesisStorage storage ds) {
