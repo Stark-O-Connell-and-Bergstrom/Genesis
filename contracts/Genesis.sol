@@ -5,15 +5,15 @@ import './GenesisLib.sol';
 
 contract Genesis is Ownable {
 
-    constructor(address defaultMetaDao_, bytes memory defaultProxyBytecode_, uint launchFee_, uint cancellationFee_, uint maxWhitelistSize_, bool genOwnerParticipation_) {
+    constructor(bytes memory defaultProxyBytecode_, bytes memory defaultDiamondCut_, uint launchFee_, uint cancellationFee_, uint maxWhitelistSize_, bool genOwnerParticipation_) {
         setUpgradeabilityProxyOwner(msg.sender);
-        initialize(defaultMetaDao_, defaultProxyBytecode_, launchFee_, cancellationFee_, maxWhitelistSize_, genOwnerParticipation_);
-    }
-
-    function initialize(address defaultMetaDao_, bytes memory defaultProxyByteCode_, uint launchFee_, uint cancellationFee_, uint maxWhitelistSize_, bool genOwnerParticipation_) public onlyProxyOwner {
-        setConfig(launchFee_, cancellationFee_, maxWhitelistSize_, genOwnerParticipation_);
-        setDefaultMetaDao(defaultMetaDao_);
-        setDefaultProxyBytecode(defaultProxyByteCode_);
+        GenesisLib.GenesisStorage storage s = GenesisLib.getStorage();
+        s.launchFee = launchFee_;
+        s.cancellationFee = cancellationFee_;
+        s.maxWhitelistSize = maxWhitelistSize_;
+        s.genOwnerParticipation = genOwnerParticipation_;
+        s.defaultContracts.proxyBytecode = defaultProxyBytecode_;
+        s.defaultContracts.proxyDiamondCut = defaultDiamondCut_;
     }
 
     function setConfig(uint launchFee_, uint cancellationFee_, uint maxWhitelistSize_, bool genOwnerParticipation_) public onlyProxyOwner {
@@ -24,14 +24,10 @@ contract Genesis is Ownable {
         s.genOwnerParticipation = genOwnerParticipation_;
     }
 
-    function setDefaultMetaDao(address defaultMetaDao_) public onlyProxyOwner {
-        GenesisLib.GenesisStorage storage s = GenesisLib.getStorage();
-        s.defaultContracts.metaDaoAddress = defaultMetaDao_;
-    }
-
-    function setDefaultProxyBytecode(bytes memory defaultProxyBytecode_) public onlyProxyOwner {
+    function setDefaultContracts(bytes memory defaultProxyBytecode_, bytes memory defaultDiamondCut_) public onlyProxyOwner {
         GenesisLib.GenesisStorage storage s = GenesisLib.getStorage();
         s.defaultContracts.proxyBytecode = defaultProxyBytecode_;
+        s.defaultContracts.proxyDiamondCut = defaultDiamondCut_;
     }
 
     function setDisabled(bool disabled_) public onlyProxyOwner {
@@ -39,7 +35,7 @@ contract Genesis is Ownable {
         s.disabled = disabled_;
     }
 
-    function createProposal(uint requiredFunds, uint participationAmount, string memory title, address[] memory whitelist, address metaDaoAddress, bytes memory proxyBytecode, bytes memory proxyDiamondCut) public payable {
+    function createProposal(uint requiredFunds, uint participationAmount, string memory title, address[] memory whitelist, bytes memory proxyBytecode, bytes memory proxyDiamondCut) public payable {
         GenesisLib.GenesisStorage storage s = GenesisLib.getStorage();
         require(s.disabled == false, "genesis is disabled");
         bytes memory tempTitle = bytes(title);
@@ -58,9 +54,8 @@ contract Genesis is Ownable {
         p.participationAmount = participationAmount;
         p.totalFunds = 0;
 
-        if (metaDaoAddress != address(0) || proxyBytecode.length > 0 || proxyDiamondCut.length > 0) {
+        if (proxyBytecode.length > 0 || proxyDiamondCut.length > 0) {
             GenesisLib.ProposalContracts storage pc = s.proposalContracts[s.proposalCount];
-            pc.metaDaoAddress = metaDaoAddress;
             pc.proxyBytecode = proxyBytecode;
             pc.proxyDiamondCut = proxyDiamondCut;
         }
@@ -120,14 +115,11 @@ contract Genesis is Ownable {
             participants[payerIndex] = owner;
         }
 
-        // deploy proxy, assign ownership to itself and set the dao logic contract
-        bytes memory proxyBytecode = pc.proxyBytecode.length > 0 ? pc.proxyBytecode : s.defaultContracts.proxyBytecode;
-        address metaDaoAddress = pc.metaDaoAddress != address(0) ? pc.metaDaoAddress : s.defaultContracts.metaDaoAddress;
-
-        proposal.daoAddress = deployProxy(proxyBytecode, proposal.id);
+        // deploy proxy, assign ownership to itself and init the dao
+        proposal.daoAddress = deployProxy(proposal.id);
 
         GenDaoInterface dao = GenDaoInterface(proposal.daoAddress);
-        dao.initProxy(metaDaoAddress, proposal.daoAddress);
+        dao.transferOwnership(proposal.daoAddress);
         dao.initialize(address(this), proposal.title, participants);
 
         if (owner != address(0) && s.launchFee > 0) {
@@ -145,11 +137,17 @@ contract Genesis is Ownable {
         msg.sender.transfer(gasCost);
     }
 
-    function deployProxy(bytes memory proxyBytecode, uint salt) internal returns (address) {
-        address addr;
+    function deployProxy(uint proposalId) internal returns (address) {
+        GenesisLib.GenesisStorage storage s = GenesisLib.getStorage();
+        GenesisLib.ProposalContracts storage pc = s.proposalContracts[proposalId];
 
+        bytes memory proxyBytecode = pc.proxyBytecode.length > 0 ? pc.proxyBytecode : s.defaultContracts.proxyBytecode;
+        bytes memory proxyDiamondCut = pc.proxyDiamondCut.length > 0 ? pc.proxyDiamondCut : s.defaultContracts.proxyDiamondCut;
+        bytes memory bytecode = abi.encodePacked(proxyBytecode, proxyDiamondCut);
+
+        address addr;
         assembly {
-            addr := create2(0, add(proxyBytecode, 0x20), mload(proxyBytecode), salt)
+            addr := create2(0, add(bytecode, 0x20), mload(bytecode), proposalId)
             if iszero(extcodesize(addr)) {
                 revert(0, 0)
             }
@@ -217,6 +215,6 @@ contract Genesis is Ownable {
 }
 
 interface GenDaoInterface {
-    function initProxy(address defaultImpl, address owner) external;
+    function transferOwnership(address _newOwner) external;
     function initialize(address genesisAddress_, string memory title_, address[] memory members_) external;
 }

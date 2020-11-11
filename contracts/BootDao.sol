@@ -1,13 +1,9 @@
 pragma solidity ^0.7.1;
 pragma experimental ABIEncoderV2;
 
+import "./BootDaoLib.sol";
+
 contract BootDao {
-
-    string public title;
-
-    address[] members;
-
-    address genesisAddress;
 
     /// @notice The number of votes in support of a proposal required in order for a quorum to be reached and for a vote to succeed
     function quorumVotes(address[] memory members_) public pure returns (uint) {
@@ -26,65 +22,6 @@ contract BootDao {
 
     function lockPeriod() public pure returns (uint) {return 10;} // 10 seconds
 
-    // @notice The total number of proposals
-    uint public proposalCount;
-
-    struct Proposal {
-        // @notice Unique id for looking up a proposal
-        uint id;
-
-        // @notice Creator of the proposal
-        address proposer;
-
-        // @notice the ordered list of target addresses for calls to be made
-        address[] targets;
-
-        // @notice The ordered list of values (i.e. msg.value) to be passed to the calls to be made
-        uint[] values;
-
-        // @notice The ordered list of function signatures to be called
-        string[] signatures;
-
-        // @notice The ordered list of calldata to be passed to each call
-        bytes[] calldatas;
-
-        // @notice The block at which voting begins: holders must delegate their votes prior to this block
-        uint startBlock;
-
-        // @notice The block at which voting ends: votes must be cast prior to this block
-        uint endBlock;
-
-        // @notice The timestamp that the proposal will be available for execution, set once the vote succeeds
-        uint unlockTime;
-
-        // @notice Current number of votes in favor of this proposal
-        uint forVotes;
-
-        // @notice Current number of votes in opposition to this proposal
-        uint againstVotes;
-
-        // @notice Flag marking whether the proposal has been canceled
-        bool canceled;
-
-        // @notice Flag marking whether the proposal has been executed
-        bool executed;
-
-        // @notice Receipts of ballots for the entire set of voters
-        mapping(address => Receipt) receipts;
-    }
-
-    // @notice Ballot receipt record for a voter
-    struct Receipt {
-        // @notice Whether or not a vote has been cast
-        bool hasVoted;
-
-        // @notice Whether or not the voter supports the proposal
-        bool support;
-
-        // @notice The number of votes the voter had, which were cast
-        uint votes;
-    }
-
     // @notice Possible states that a proposal may be in
     enum ProposalState {
         Pending,
@@ -96,12 +33,6 @@ contract BootDao {
         Expired,
         Executed
     }
-
-    // @notice The official record of all proposals ever proposed
-    mapping(uint => Proposal) public proposals;
-
-    // @notice The balances of the vote weights - initialized to 1 vote per account
-    mapping(address => uint) public balances;
 
     // @notice An event emitted when a new proposal is created
     event ProposalCreated(uint id, address proposer, address[] targets, uint[] values, string[] signatures, bytes[] calldatas, uint startBlock, uint endBlock, string description);
@@ -123,15 +54,17 @@ contract BootDao {
     constructor() {}
 
     function initialize(address genesisAddress_, string memory title_, address[] memory members_) public {
-        require(members.length == 0, "BootDao::initialize: already initialized");
         require(members_.length > 0, "BootDao::initialize: member list is empty");
 
-        genesisAddress = genesisAddress_;
-        title = title_;
-        members = members_;
+        BootDaoLib.DaoStorage storage ds = BootDaoLib.daoStorage();
+        require(ds.members.length == 0, "BootDao::initialize: already initialized");
+
+        ds.genesisAddress = genesisAddress_;
+        ds.title = title_;
+        ds.members = members_;
 
         for (uint i = 0; i < members_.length; i++) {
-            balances[members_[i]] = 1;
+            ds.balances[members_[i]] = 1;
         }
     }
 
@@ -145,10 +78,13 @@ contract BootDao {
         uint startBlock = add256(block.number, votingDelay());
         uint endBlock = add256(startBlock, votingPeriod());
 
-        proposalCount++;
+        BootDaoLib.DaoStorage storage ds = BootDaoLib.daoStorage();
 
-        Proposal storage newProposal = proposals[proposalCount];
-        newProposal.id = proposalCount;
+        ds.proposalCount++;
+
+        BootDaoLib.Proposal storage newProposal = ds.proposals[ds.proposalCount];
+        newProposal.id = ds.proposalCount;
+        newProposal.description = description;
         newProposal.proposer = msg.sender;
         newProposal.unlockTime = 0;
         newProposal.targets = targets;
@@ -161,13 +97,14 @@ contract BootDao {
         newProposal.againstVotes = 0;
         newProposal.canceled = false;
         newProposal.executed = false;
+        ds.proposals[ds.proposalCount];
 
         emit ProposalCreated(newProposal.id, msg.sender, targets, values, signatures, calldatas, startBlock, endBlock, description);
         return newProposal.id;
     }
 
     function lockExecution(uint proposalId) internal {
-        Proposal storage proposal = proposals[proposalId];
+        BootDaoLib.Proposal storage proposal = BootDaoLib.getProposal(proposalId);
 
         uint unlockTime = add256(block.timestamp, lockPeriod());
         proposal.unlockTime = unlockTime;
@@ -179,7 +116,7 @@ contract BootDao {
         uint gasBefore = gasleft();
         require(state(proposalId) == ProposalState.Succeeded, "BootDao::execute: proposal can only be executed if it has succeeded");
 
-        Proposal storage proposal = proposals[proposalId];
+        BootDaoLib.Proposal storage proposal = BootDaoLib.getProposal(proposalId);
         proposal.executed = true;
         for (uint i = 0; i < proposal.targets.length; i++) {
             executeTransaction(proposal.targets[i], proposal.values[i], proposal.signatures[i], proposal.calldatas[i], proposal.unlockTime);
@@ -211,34 +148,37 @@ contract BootDao {
     }
 
     function cancel(uint proposalId) public {
-        require(balances[msg.sender] > 0, "BootDao::cancel: sender is not a member");
+        BootDaoLib.DaoStorage storage ds = BootDaoLib.daoStorage();
+        require(ds.balances[msg.sender] > 0, "BootDao::cancel: sender is not a member");
         ProposalState state = state(proposalId);
         require(state != ProposalState.Executed, "BootDao::cancel: cannot cancel executed proposal");
         require(state != ProposalState.Canceled, "BootDao::cancel: cannot cancel already cancelled proposal");
 
-        Proposal storage proposal = proposals[proposalId];
+        BootDaoLib.Proposal storage proposal = ds.proposals[proposalId];
         proposal.canceled = true;
 
         emit ProposalCanceled(proposalId);
     }
 
     function getActions(uint proposalId) public view returns (address[] memory targets, uint[] memory values, string[] memory signatures, bytes[] memory calldatas) {
-        Proposal storage p = proposals[proposalId];
+        BootDaoLib.Proposal storage p = BootDaoLib.getProposal(proposalId);
         return (p.targets, p.values, p.signatures, p.calldatas);
     }
 
-    function getReceipt(uint proposalId, address voter) public view returns (Receipt memory) {
-        return proposals[proposalId].receipts[voter];
+    function getReceipt(uint proposalId, address voter) public view returns (BootDaoLib.Receipt memory) {
+        BootDaoLib.Proposal storage p = BootDaoLib.getProposal(proposalId);
+        return p.receipts[voter];
     }
 
     function castVote(uint proposalId, bool support) public {
-        require(balances[msg.sender] > 0, "BootDao::castVote: sender is not a member");
+        BootDaoLib.DaoStorage storage ds = BootDaoLib.daoStorage();
+        require(ds.balances[msg.sender] > 0, "BootDao::castVote: sender is not a member");
         require(state(proposalId) == ProposalState.Active, "BootDao::castVote: voting is closed");
-        Proposal storage proposal = proposals[proposalId];
-        Receipt storage receipt = proposal.receipts[msg.sender];
+        BootDaoLib.Proposal storage proposal = ds.proposals[proposalId];
+        BootDaoLib.Receipt storage receipt = proposal.receipts[msg.sender];
 
         // will always be 1 until DAO decides otherwise
-        uint votes = balances[msg.sender];
+        uint votes = ds.balances[msg.sender];
 
         // sub prior vote if voted
         if (receipt.hasVoted) {
@@ -259,7 +199,7 @@ contract BootDao {
         receipt.support = support;
         receipt.votes = votes;
 
-        uint qv = quorumVotes(members);
+        uint qv = quorumVotes(ds.members);
         if (proposal.unlockTime == 0 && (proposal.forVotes * 10 >= qv || proposal.againstVotes * 10 >= qv)) {
             lockExecution(proposalId);
         }
@@ -268,8 +208,9 @@ contract BootDao {
     }
 
     function state(uint proposalId) public view returns (ProposalState) {
-        require(proposalCount >= proposalId && proposalId > 0, "BootDao::state: invalid proposal id");
-        Proposal storage proposal = proposals[proposalId];
+        BootDaoLib.DaoStorage storage ds = BootDaoLib.daoStorage();
+        require(ds.proposalCount >= proposalId && proposalId > 0, "BootDao::state: invalid proposal id");
+        BootDaoLib.Proposal storage proposal = ds.proposals[proposalId];
         if (proposal.canceled) {
             return ProposalState.Canceled;
         } else if (block.number <= proposal.startBlock) {
@@ -279,7 +220,7 @@ contract BootDao {
         } else if (proposal.unlockTime == 0 && block.number >= proposal.endBlock) {
             return ProposalState.Expired;
         } else if (proposal.unlockTime > 0 && block.timestamp >= proposal.unlockTime) {
-            uint qv = quorumVotes(members);
+            uint qv = quorumVotes(ds.members);
             if (proposal.forVotes * 10 >= qv) {
                 return ProposalState.Succeeded;
             }
@@ -299,12 +240,14 @@ contract BootDao {
         return a - b;
     }
 
-    function getProposal(uint id) public view returns (uint, uint, address, uint, uint, uint, uint, uint, bool, bool) {
-        Proposal storage proposal = proposals[id];
+    function getProposal(uint id) public view returns (uint, uint, string memory, address, uint, uint, uint, uint, uint, bool, bool) {
+        BootDaoLib.DaoStorage storage ds = BootDaoLib.daoStorage();
+        BootDaoLib.Proposal storage proposal = ds.proposals[id];
         ProposalState proposalState = state(id);
         return (
             uint(proposalState),
-            members.length,
+            ds.members.length,
+            proposal.description,
             proposal.proposer,
             proposal.startBlock,
             proposal.endBlock,
@@ -313,6 +256,15 @@ contract BootDao {
             proposal.againstVotes,
             proposal.executed,
             proposal.canceled
+        );
+    }
+
+    function getInfo() public view returns (string memory, uint, address) {
+        BootDaoLib.DaoStorage storage ds = BootDaoLib.daoStorage();
+        return (
+            ds.title,
+            ds.members.length,
+            ds.genesisAddress
         );
     }
 }

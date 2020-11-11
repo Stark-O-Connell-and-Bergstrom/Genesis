@@ -20,7 +20,6 @@ library GenesisLib {
     }
 
     struct ProposalContracts {
-        address metaDaoAddress;
         bytes proxyBytecode;
         bytes proxyDiamondCut;
     }
