@@ -1,12 +1,13 @@
 pragma solidity ^0.7.1;
 
-import './Ownable.sol';
+import './utils/LibOwnership.sol';
 import './GenesisLib.sol';
+import "./utils/IERC173.sol";
 
-contract Genesis is Ownable {
+contract Genesis is IERC173 {
 
     constructor(bytes memory diamondBytecode_, bytes memory diamondCut_, uint launchFee_, uint cancellationFee_, uint maxWhitelistSize_, bool genOwnerParticipation_) {
-        setUpgradeabilityProxyOwner(msg.sender);
+        LibOwnership.setContractOwner(msg.sender);
         GenesisLib.GenesisStorage storage s = GenesisLib.getStorage();
         s.launchFee = launchFee_;
         s.cancellationFee = cancellationFee_;
@@ -16,7 +17,8 @@ contract Genesis is Ownable {
         s.diamondCut = diamondCut_;
     }
 
-    function setConfig(uint launchFee_, uint cancellationFee_, uint maxWhitelistSize_, bool genOwnerParticipation_) public onlyProxyOwner {
+    function setConfig(uint launchFee_, uint cancellationFee_, uint maxWhitelistSize_, bool genOwnerParticipation_) public {
+        LibOwnership.enforceIsContractOwner();
         GenesisLib.GenesisStorage storage s = GenesisLib.getStorage();
         s.launchFee = launchFee_;
         s.cancellationFee = cancellationFee_;
@@ -24,13 +26,15 @@ contract Genesis is Ownable {
         s.genOwnerParticipation = genOwnerParticipation_;
     }
 
-    function setDefaultDiamond(bytes memory diamondBytecode_, bytes memory diamondCut_) public onlyProxyOwner {
+    function setDefaultDiamond(bytes memory diamondBytecode_, bytes memory diamondCut_) public {
+        LibOwnership.enforceIsContractOwner();
         GenesisLib.GenesisStorage storage s = GenesisLib.getStorage();
         s.diamondBytecode = diamondBytecode_;
         s.diamondCut = diamondCut_;
     }
 
-    function setDisabled(bool disabled_) public onlyProxyOwner {
+    function setDisabled(bool disabled_) public {
+        LibOwnership.enforceIsContractOwner();
         GenesisLib.GenesisStorage storage s = GenesisLib.getStorage();
         s.disabled = disabled_;
     }
@@ -90,7 +94,7 @@ contract Genesis is Ownable {
         require(proposal.totalFunds >= proposal.requiredFunds, 'insufficient funds');
 
         uint participantCount = proposal.participantCount;
-        address owner = proxyOwner();
+        address owner = LibOwnership.contractOwner();
         if (owner != address(0) && s.genOwnerParticipation) {
             participantCount++;
         }
@@ -177,7 +181,7 @@ contract Genesis is Ownable {
 
         uint refundRatio = 100;
 
-        address owner = proxyOwner();
+        address owner = LibOwnership.contractOwner();
         if (owner != address(0) && s.cancellationFee > 0) {
             refundRatio -= s.cancellationFee;
             transferTo(owner, amount * s.cancellationFee / 100);
@@ -206,6 +210,15 @@ contract Genesis is Ownable {
             proposal.totalFunds,
             proposal.participantCount
         );
+    }
+
+    function transferOwnership(address _newOwner) external override {
+        LibOwnership.enforceIsContractOwner();
+        LibOwnership.setContractOwner(_newOwner);
+    }
+
+    function owner() external override view returns (address owner_) {
+        owner_ = LibOwnership.contractOwner();
     }
 }
 
